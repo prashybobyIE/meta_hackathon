@@ -2,7 +2,39 @@
 
 Run from the workspace root with Python 3.11+. Public runtime has no third-party dependencies; no installation step is required. Swift is optional for the native observation client. These commands process public reference inputs. The separate protected path uses Azure confidential containers and requires `cryptography`.
 
+See the [laptop testing guide](TRY_DEMO.md) for a component-placement table, free rehearsal and local Meta API-key setup.
+
 ## One command
+
+For the interactive visual dashboard:
+
+```sh
+python3 -m agent_marketplace.studio --port 8765
+```
+
+Open `http://127.0.0.1:8765`, choose the free rehearsal and start a run. The persistent dashboard starts real marketplace and worker processes for each fresh job, shows task/bid/lease/verification events and labels simulated model responses and credits. Select a component to filter its trace. Once the application is independently accepted, edit public sample CSV and run it through the accepted modules without another model call. All components remain on one device; this is not a multi-machine or host-confidentiality claim. No Azure resources are created.
+
+Live Meta controls are deliberately unavailable until startup opts in:
+
+```sh
+python3 -m agent_marketplace.studio --port 8765 --allow-live-meta
+```
+
+Configure `MODEL_API_KEY` in local `.env` first. Selecting and starting live mode is billable and uses the existing per-run/global spend guard, public contracts only, and bounded repairs. Never share `.env` or the generated `.demo/` workspace. The shareable visual dashboard shows per-run model usage only; keys, dispatch credentials, private resource identifiers and unrelated account totals are excluded. It binds to loopback, checks local Host/Origin and requires an injected browser-session capability for actions; it is not a public hosting service.
+
+The planner still proposes dependencies and complexity for the three frozen module contracts. It does not yet derive arbitrary new contracts from uploaded code. The prompt distinguishes code-generation dependencies from runtime data flow; actual live output must still be measured to establish concurrency. Free rehearsal uses a local API simulator and is clearly labeled as prewritten output.
+
+The November 4 live run accepted the corrected Meta plan and generated parser/categories concurrently. It is one recorded run, not a general concurrency guarantee. Completed studio runs save a private `observer-status.json` alongside their existing artifacts. To inspect one after a server restart without another model call:
+
+```sh
+python3 -m agent_marketplace.studio --port 8765 --resume-completed-run .demo/studio/YOUR_COMPLETED_RUN
+```
+
+The recording must belong to that studio workspace. Artifact hashes and final application behavior are checked again; modified or incomplete artifacts refuse. The restored screen is explicitly labeled recorded, and trying public CSV still runs only accepted modules. Add `--allow-live-meta` only if new billable runs should be enabled. When working in a separate Git worktree, retain the existing absolute `META_BUDGET_LEDGER` path and deliberately load the existing key; do not create a fresh ledger and lose prior accounting.
+
+The optional three-minute editable video preview lives in `demo_video/`. Its own README describes local setup and the user-recorded narration hook. No final MP4 should be described as ready while narration is absent.
+
+For the earlier CLI-driven observer:
 
 ```sh
 python3 -m agent_marketplace.demo --failure --hold-seconds 300
