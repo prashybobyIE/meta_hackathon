@@ -1,0 +1,136 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "image": {
+      "type": "string"
+    },
+    "registryServer": {
+      "type": "string"
+    },
+    "registryUser": {
+      "type": "string",
+      "defaultValue": ""
+    },
+    "registryPassword": {
+      "type": "securestring",
+      "defaultValue": ""
+    },
+    "modelImage": {
+      "type": "string"
+    },
+    "ccePolicy": {
+      "type": "string",
+      "metadata": {
+        "description": "Base64 CCE policy generated for your own images"
+      }
+    },
+    "containerGroupName": {
+      "type": "string"
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "centralindia"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.ContainerInstance/containerGroups",
+      "apiVersion": "2023-05-01",
+      "name": "[parameters('containerGroupName')]",
+      "location": "[parameters('location')]",
+      "tags": {
+        "purpose": "protected-worker"
+      },
+      "properties": {
+        "sku": "Confidential",
+        "osType": "Linux",
+        "restartPolicy": "Never",
+        "confidentialComputeProperties": {
+          "ccePolicy": "[parameters('ccePolicy')]"
+        },
+        "imageRegistryCredentials": [
+          {
+            "server": "[parameters('registryServer')]",
+            "username": "[parameters('registryUser')]",
+            "password": "[parameters('registryPassword')]"
+          }
+        ],
+        "ipAddress": {
+          "type": "Public",
+          "ports": [
+            {
+              "protocol": "TCP",
+              "port": 8443
+            }
+          ]
+        },
+        "containers": [
+          {
+            "name": "worker",
+            "properties": {
+              "image": "[parameters('image')]",
+              "ports": [
+                {
+                  "port": 8443
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": 1,
+                  "memoryInGB": 1
+                }
+              }
+            }
+          },
+          {
+            "name": "skr",
+            "properties": {
+              "image": "mcr.microsoft.com/aci/skr:2.13",
+              "command": [
+                "/skr.sh"
+              ],
+              "environmentVariables": [
+                {
+                  "name": "Port",
+                  "value": "9000"
+                }
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": 1,
+                  "memoryInGB": 1
+                }
+              }
+            }
+          },
+          {
+            "name": "model",
+            "properties": {
+              "image": "[parameters('modelImage')]",
+              "command": [
+                "/app/llama-server",
+                "-m",
+                "/models/model.gguf",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "8080",
+                "-c",
+                "2048",
+                "-t",
+                "3"
+              ],
+              "resources": {
+                "requests": {
+                  "cpu": 3,
+                  "memoryInGB": 6
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

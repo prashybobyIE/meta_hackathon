@@ -1,0 +1,165 @@
+{
+  "schema": "agent-marketplace-workload-v1",
+  "id": "inventory-reorder",
+  "title": "Inventory reorder plan",
+  "sensitivity": "public",
+  "planning_brief": "You plan a small public inventory-reorder application for a distributed worker network. For each module give its dependencies, a complexity (low, medium or high) that sets its maximum price, and a one-sentence rationale. The application is a chain: the catalog module parses reorder rules, and the reorder module turns that parsed catalog plus stock counts into purchase quantities. A module depends on another if the application feeds it that module's output; reorder therefore depends on catalog.",
+  "budget_credits": 60,
+  "tasks": {
+    "catalog": {
+      "contract_id": "inventory-catalog-v1",
+      "filename": "catalog.py",
+      "function": "parse_catalog",
+      "description": "Parse semicolon-separated catalog text with header sku;reorder_point;pack_size into a dictionary keyed by sku with integer reorder_point and pack_size. Reject a wrong header, wrong field counts, blank or duplicate skus, non-digit quantities and a pack size below 1. No file/network access.",
+      "spec": "Implement parse_catalog(text). The first line must be exactly sku;reorder_point;pack_size. Each later nonblank line has three semicolon-separated fields; strip surrounding spaces from each. Return a dict mapping each sku to {\"reorder_point\": int, \"pack_size\": int}. Raise ValueError for a wrong header, a wrong field count, a blank or repeated sku, a quantity that is not plain ASCII digits, or a pack_size below 1. Use str.split on newlines and semicolons; str.splitlines is not available.",
+      "depends_on": [],
+      "complexity": "medium",
+      "output": {
+        "type": "dict",
+        "values": {
+          "type": "dict",
+          "fields": {
+            "reorder_point": {"type": "int"},
+            "pack_size": {"type": "int"}
+          }
+        }
+      },
+      "public_cases": [
+        {
+          "input": "sku;reorder_point;pack_size\nBOLT-M4;100;25\nNUT-M4;40;10\n",
+          "expect": {
+            "BOLT-M4": {"reorder_point": 100, "pack_size": 25},
+            "NUT-M4": {"reorder_point": 40, "pack_size": 10}
+          }
+        },
+        {
+          "input": "sku;reorder_point;pack_size\n",
+          "expect": {}
+        },
+        {
+          "input": "sku;reorder_point;pack_size\nBOLT-M4;100;0\n",
+          "raises": true
+        }
+      ],
+      "hidden_cases": [
+        {
+          "input": "sku;reorder_point;pack_size\n WASHER ; 0 ; 1 \nSCREW-X;7;3",
+          "expect": {
+            "WASHER": {"reorder_point": 0, "pack_size": 1},
+            "SCREW-X": {"reorder_point": 7, "pack_size": 3}
+          }
+        },
+        {"input": "sku;reorder_point;pack_size\nDUP-A;1;1\nDUP-A;2;2\n", "raises": true},
+        {"input": "sku;reorder_point;pack_size\nNEG-A;-1;2\n", "raises": true},
+        {"input": "sku;reorder_point;pack_size\nFRAC-A;1.5;2\n", "raises": true},
+        {"input": "sku;reorder_point;pack_size\nEXTRA-A;1;2;9\n", "raises": true},
+        {"input": "sku;reorder_point;pack_size\n;1;2\n", "raises": true},
+        {"input": "item;reorder_point;pack_size\nWRONG-HEAD;1;2\n", "raises": true}
+      ],
+      "fixture": "fixtures/catalog.py"
+    },
+    "reorder": {
+      "contract_id": "inventory-reorder-v1",
+      "filename": "reorder.py",
+      "function": "plan_reorder",
+      "description": "Given the accepted catalog module's output and stock counts, return the packs to order for each sku below its reorder point, in sku order. Reject stock for an unknown sku and any stock value that is not a non-negative integer. Consumes the catalog artifact. No input mutation; no file/network access.",
+      "spec": "Implement plan_reorder(payload). payload[\"catalog\"] is the value returned by the accepted parse_catalog module, shown below, and payload[\"stock\"] maps sku to integer units on hand. A catalog sku absent from stock has 0 on hand. For each catalog sku, in sorted order, whose on-hand units are below reorder_point, order the fewest whole packs that bring on-hand units to at least reorder_point. Return a list of {\"sku\": str, \"on_hand\": int, \"packs\": int, \"units\": int}, where units is packs times pack_size, omitting skus that need no order. Raise ValueError if stock names a sku missing from the catalog, or if a stock value is a bool, is not an int, or is negative. Do not mutate the input.",
+      "depends_on": ["catalog"],
+      "consumes": ["catalog"],
+      "complexity": "medium",
+      "output": {
+        "type": "list",
+        "items": {
+          "type": "dict",
+          "fields": {
+            "sku": {"type": "str"},
+            "on_hand": {"type": "int"},
+            "packs": {"type": "int"},
+            "units": {"type": "int"}
+          }
+        }
+      },
+      "public_cases": [
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\nBOLT-M4;100;25\nNUT-M4;40;10\n"},
+            "stock": {"BOLT-M4": 60, "NUT-M4": 45}
+          },
+          "expect": [{"sku": "BOLT-M4", "on_hand": 60, "packs": 2, "units": 50}]
+        },
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\nBOLT-M4;100;25\nNUT-M4;40;10\n"},
+            "stock": {}
+          },
+          "expect": [
+            {"sku": "BOLT-M4", "on_hand": 0, "packs": 4, "units": 100},
+            {"sku": "NUT-M4", "on_hand": 0, "packs": 4, "units": 40}
+          ]
+        },
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\nBOLT-M4;100;25\nNUT-M4;40;10\n"},
+            "stock": {"GHOST-Z": 1}
+          },
+          "raises": true
+        }
+      ],
+      "hidden_cases": [
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\n WASHER ; 0 ; 1 \nSCREW-X;7;3"},
+            "stock": {"SCREW-X": 1, "WASHER": 0}
+          },
+          "expect": [{"sku": "SCREW-X", "on_hand": 1, "packs": 2, "units": 6}]
+        },
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\n WASHER ; 0 ; 1 \nSCREW-X;7;3"},
+            "stock": {"SCREW-X": 7}
+          },
+          "expect": []
+        },
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\n WASHER ; 0 ; 1 \nSCREW-X;7;3"},
+            "stock": {"SCREW-X": true}
+          },
+          "raises": true
+        },
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\n WASHER ; 0 ; 1 \nSCREW-X;7;3"},
+            "stock": {"SCREW-X": -2}
+          },
+          "raises": true
+        },
+        {
+          "input": {
+            "catalog": {"$call": "catalog", "arg": "sku;reorder_point;pack_size\n WASHER ; 0 ; 1 \nSCREW-X;7;3"},
+            "stock": {"SCREW-X": "4"}
+          },
+          "raises": true
+        }
+      ],
+      "fixture": "fixtures/reorder.py",
+      "simulated_first_attempt": "fixtures/reorder_broken.py"
+    }
+  },
+  "integration": {
+    "input": "sku;reorder_point;pack_size\nFILTER-A;12;6\nHOSE-B;5;2\nTAPE-C;3;4\n",
+    "input_filename": "public-catalog.txt",
+    "result": {
+      "$call": "reorder",
+      "arg": {
+        "catalog": {"$call": "catalog", "arg": {"$input": true}},
+        "stock": {"FILTER-A": 1, "HOSE-B": 4, "TAPE-C": 9}
+      }
+    },
+    "expect": [
+      {"sku": "FILTER-A", "on_hand": 1, "packs": 2, "units": 12},
+      {"sku": "HOSE-B", "on_hand": 4, "packs": 1, "units": 2}
+    ]
+  },
+  "report": {"renderer": "json-table", "title": "Inventory reorder plan"}
+}

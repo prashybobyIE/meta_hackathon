@@ -1,0 +1,317 @@
+{
+  "schema": "agent-marketplace-workload-v1",
+  "id": "expense-report",
+  "title": "Expense report",
+  "sensitivity": "public",
+  "planning_brief": "You plan a small public expense-report application for a distributed worker network. For each module give its dependencies, a complexity (low, medium or high) that sets its maximum price, and a one-sentence rationale. The application is a pipeline: the parser's rows go through categories, and summary totals the categorized rows. A module depends on another if the application feeds it that module's output; summary therefore depends on both parser and categories.",
+  "budget_credits": 100,
+  "tasks": {
+    "parser": {
+      "contract_id": "expense-parser-v1",
+      "filename": "parser.py",
+      "function": "parse_expenses",
+      "description": "Parse CSV headers date,merchant,amount,category into dictionaries with integer-cent amount. Preserve date/merchant/category. Reject missing/extra fields or invalid decimal amounts (optional sign, at most 2 decimal places). Use standard csv/io/decimal only. Return a list; no file/network access.",
+      "spec": "Implement parse_expenses(csv_text). Parse CSV headers date,merchant,amount,category. Return a list of dictionaries preserving those fields, converting amount to integer cents. Accept signed ordinary decimal amounts with at most two fractional digits. Reject malformed amounts, missing/extra fields, or malformed rows with ValueError. Use csv, io and decimal from Python's standard library if needed.",
+      "depends_on": [],
+      "complexity": "high",
+      "output": {
+        "type": "list",
+        "items": {
+          "type": "dict",
+          "fields": {
+            "amount": {
+              "type": "int"
+            }
+          }
+        }
+      },
+      "public_cases": [
+        {
+          "input": "date,merchant,amount,category\n2026-10-01,Coffee House,4.50,\n2026-10-02,Train Ticket,12.00,\n2026-10-03,Book Shop,25.00,education\n2026-10-04,Cafe Refund,-1.25,\n",
+          "expect": [
+            {
+              "date": "2026-10-01",
+              "merchant": "Coffee House",
+              "amount": 450,
+              "category": ""
+            },
+            {
+              "date": "2026-10-02",
+              "merchant": "Train Ticket",
+              "amount": 1200,
+              "category": ""
+            },
+            {
+              "date": "2026-10-03",
+              "merchant": "Book Shop",
+              "amount": 2500,
+              "category": "education"
+            },
+            {
+              "date": "2026-10-04",
+              "merchant": "Cafe Refund",
+              "amount": -125,
+              "category": ""
+            }
+          ]
+        },
+        {
+          "input": "date,merchant,amount,category\n2026-01-01,\"Cafe, East\",+0.01, Food \n",
+          "expect": [
+            {
+              "date": "2026-01-01",
+              "merchant": "Cafe, East",
+              "amount": 1,
+              "category": " Food "
+            }
+          ]
+        },
+        {
+          "input": "date,merchant,amount,category\n",
+          "expect": []
+        },
+        {
+          "input": "date,merchant,amount,category\nd,m,1.001,x\n",
+          "raises": true
+        }
+      ],
+      "hidden_cases": [
+        {
+          "input": "date,merchant,amount,category\nd,m,NaN,x\n",
+          "raises": true
+        },
+        {
+          "input": "date,merchant,amount,category\nd,m,Infinity,x\n",
+          "raises": true
+        },
+        {
+          "input": "date,merchant,amount,category\nd,m,1e2,x\n",
+          "raises": true
+        },
+        {
+          "input": "date,merchant,amount,category\nd,m,,x\n",
+          "raises": true
+        },
+        {
+          "input": "date,merchant,amount,category\nd,m,1,x,extra\n",
+          "raises": true
+        },
+        {
+          "input": "date,merchant,amount,category\nd,m,1\n",
+          "raises": true
+        },
+        {
+          "input": "merchant,amount\nm,1\n",
+          "raises": true
+        }
+      ],
+      "fixture": "fixtures/parser.py"
+    },
+    "categories": {
+      "contract_id": "expense-categories-v1",
+      "filename": "categories.py",
+      "function": "categorize_expenses",
+      "description": "Copy each input row, preserving fields. Strip/lowercase a supplied nonblank category. Otherwise case-insensitive merchant coffee/cafe/restaurant -> food, uber/train/bus -> transport, else other. Do not mutate input. Return copied rows; no file/network access.",
+      "spec": "Implement categorize_expenses(rows). Return a new list of copied dictionaries without mutating input. Preserve a supplied nonblank category after strip/lowercase. Otherwise classify merchant case-insensitively: coffee/cafe/restaurant -> food; uber/train/bus -> transport; everything else -> other.",
+      "depends_on": [],
+      "complexity": "medium",
+      "output": {
+        "type": "list",
+        "items": {
+          "type": "dict",
+          "fields": {
+            "amount": {
+              "type": "int"
+            }
+          }
+        }
+      },
+      "public_cases": [
+        {
+          "input": [
+            {
+              "merchant": "COFFEE cafe",
+              "amount": 400,
+              "category": ""
+            },
+            {
+              "merchant": "UBER",
+              "amount": -12
+            },
+            {
+              "merchant": "Book",
+              "amount": 100,
+              "category": " Education "
+            },
+            {
+              "merchant": "Unknown",
+              "amount": 0
+            },
+            {
+              "merchant": "Restaurant",
+              "amount": 42,
+              "category": "  "
+            }
+          ],
+          "expect": [
+            {
+              "merchant": "COFFEE cafe",
+              "amount": 400,
+              "category": "food"
+            },
+            {
+              "merchant": "UBER",
+              "amount": -12,
+              "category": "transport"
+            },
+            {
+              "merchant": "Book",
+              "amount": 100,
+              "category": "education"
+            },
+            {
+              "merchant": "Unknown",
+              "amount": 0,
+              "category": "other"
+            },
+            {
+              "merchant": "Restaurant",
+              "amount": 42,
+              "category": "food"
+            }
+          ]
+        }
+      ],
+      "hidden_cases": [
+        {
+          "input": [],
+          "expect": []
+        }
+      ],
+      "fixture": "fixtures/categories.py",
+      "simulated_first_attempt": "fixtures/categories_broken.py"
+    },
+    "summary": {
+      "contract_id": "expense-summary-v1",
+      "filename": "summary.py",
+      "function": "summarize_expenses",
+      "description": "Return total_cents, by_category and count from integer-cent amount fields. Reject boolean or non-int amounts. Default missing/blank category to other. Do not mutate input. No file/network access.",
+      "spec": "Implement summarize_expenses(rows). Return a dict with total_cents (sum of integer amount values), by_category (category totals, missing/blank category defaults to other), and count. Reject non-integer and bool amounts with ValueError. Do not mutate input.",
+      "depends_on": [
+        "parser",
+        "categories"
+      ],
+      "complexity": "medium",
+      "output": {
+        "type": "dict",
+        "fields": {
+          "total_cents": {
+            "type": "int"
+          },
+          "count": {
+            "type": "int"
+          },
+          "by_category": {
+            "type": "dict",
+            "values": {
+              "type": "int"
+            }
+          }
+        }
+      },
+      "public_cases": [
+        {
+          "input": [
+            {
+              "amount": 123,
+              "category": "food"
+            },
+            {
+              "amount": -23,
+              "category": "food"
+            },
+            {
+              "amount": 200
+            },
+            {
+              "amount": 0,
+              "category": ""
+            }
+          ],
+          "expect": {
+            "total_cents": 300,
+            "by_category": {
+              "food": 100,
+              "other": 200
+            },
+            "count": 4
+          }
+        },
+        {
+          "input": [],
+          "expect": {
+            "total_cents": 0,
+            "by_category": {},
+            "count": 0
+          }
+        },
+        {
+          "input": [
+            {
+              "amount": true
+            }
+          ],
+          "raises": true
+        }
+      ],
+      "hidden_cases": [
+        {
+          "input": [
+            {
+              "amount": 1.2
+            }
+          ],
+          "raises": true
+        },
+        {
+          "input": [
+            {
+              "amount": "10"
+            }
+          ],
+          "raises": true
+        }
+      ],
+      "fixture": "fixtures/summary.py"
+    }
+  },
+  "integration": {
+    "input": "date,merchant,amount,category\n2026-10-01,Coffee House,4.50,\n2026-10-02,Train Ticket,12.00,\n2026-10-03,Book Shop,25.00,education\n2026-10-04,Cafe Refund,-1.25,\n",
+    "input_filename": "public-expenses.csv",
+    "result": {
+      "$call": "summary",
+      "arg": {
+        "$call": "categories",
+        "arg": {
+          "$call": "parser",
+          "arg": {
+            "$input": true
+          }
+        }
+      }
+    },
+    "expect": {
+      "total_cents": 4025,
+      "by_category": {
+        "food": 325,
+        "transport": 1200,
+        "education": 2500
+      },
+      "count": 4
+    }
+  },
+  "report": {
+    "renderer": "expense-summary",
+    "title": "Expense report"
+  }
+}

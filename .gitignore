@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.demo/
+*.token
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+*.log
+.build/
+.swiftpm/
+.DS_Store
+.env
+.env.*
+!.env.example
+.venv/
+.budget/
+*.pem
+*.key
+*.gguf
+protected_worker/deploy/*.deployed.json
+
+# Agent worktrees
+.claude/worktrees/
