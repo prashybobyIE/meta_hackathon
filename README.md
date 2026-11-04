@@ -134,6 +134,6 @@ The October 29 design and threat-model documents are not included: they predate 
 
 ## Models and licence
 
-Project-owned code is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Use, modification and distribution are permitted for the purposes defined in that license. Commercial use outside those permissions requires a separate license from the rights holders. This is not an OSI open-source license. Third-party components retain their own licenses. Any separate rights granted through a hackathon submission remain separate from this repository license.
+Project-owned code in this sanitized public demo is licensed under the [MIT License](LICENSE), including commercial use subject to its terms. Model weights, Meta API access and third-party components retain their separate licenses and agreements. The public-demo grant does not publish the private project or change licenses on material excluded from this repository. Any separate rights granted through the hackathon remain separate.
 
 This repository contains no model weights. Llama 3.2 is Meta's model and is subject to Meta's licence terms, which you accept when you obtain it. The original deployment used an unofficial GGUF conversion. `muse-spark-1.3` is a hosted Meta model, used under your own API agreement.
