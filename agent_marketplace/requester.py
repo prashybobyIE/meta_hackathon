@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hmac
 from http.server import BaseHTTPRequestHandler
 import json
@@ -17,6 +18,7 @@ from .protocol import ApiError, CAPABILITY, MAX_BODY_BYTES, canonical_hash, deco
 from .planner import COMPLEXITY_CREDITS, reference_plan
 from .security import assess_execution, require_public_work, validate_transport_url
 from .transport import caller_is_loopback, client_tls_context, http_listener, is_loopback_host, server_tls_context
+from .trace import build_trace
 from .verification import verify_artifact
 from .workload import default_workload, resolve_workload
 
@@ -60,6 +62,8 @@ class Requester:
         self.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = self.workspace / "requester-state.json"
         self.lock = threading.RLock()
+        self.plan_lock = threading.Lock()
+        self.planning = False
         self.lease_seconds = float(lease_seconds)
         if not 0.1 <= self.lease_seconds <= 3600:
             raise ValueError("Invalid lease duration")
@@ -89,12 +93,30 @@ class Requester:
             self.save()
 
     def plan(self):
-        """Settle the graph once, before anything is advertised. Survives restart."""
-        if not self.state.get("plan"):
-            self.state["plan"] = self.planner() if self.planner else reference_plan(workload=self.workload)
-            self.emit("plan_settled", source=self.state["plan"]["source"])
-            self.save()
-        return self.state["plan"]
+        """Settle once without holding the status/state lock over a model call."""
+        with self.plan_lock:
+            with self.lock:
+                if self.state.get("plan"):
+                    return self.state["plan"]
+                self.planning = True
+                self.emit("plan_started", assisted=self.planner is not None)
+                self.save()
+            try:
+                proposed = self.planner() if self.planner else reference_plan(workload=self.workload)
+            except Exception:
+                with self.lock:
+                    self.planning = False
+                    # Remote/model exceptions can contain request payloads or credentials.
+                    self.emit("plan_failed")
+                    self.save()
+                raise
+            with self.lock:
+                self.state["plan"] = proposed
+                self.planning = False
+                self.emit("plan_settled", source=proposed["source"], model=proposed.get("model"),
+                          cost_usd=proposed.get("cost_usd"), task_count=len(proposed["tasks"]))
+                self.save()
+                return self.state["plan"]
 
     def record_protected(self, record):
         """Metadata only. This step is separate from market bidding and credit settlement."""
@@ -115,11 +137,15 @@ class Requester:
         private_json(self.path, self.state)
 
     def emit(self, name, **fields):
-        entry = {"time": time.time(), "event": name, **fields}
-        self.state["events"].append(entry)
-        self.state["events"] = self.state["events"][-1000:]
-        if self.on_event:
-            self.on_event(entry)
+        with self.lock:
+            sequence = self.state.get("event_sequence", 0) + 1
+            self.state["event_sequence"] = sequence
+            entry = {"time": time.time(), "event": name, "sequence": sequence, **fields}
+            self.state["events"].append(entry)
+            self.state["events"] = self.state["events"][-1000:]
+            if self.on_event:
+                self.on_event(entry)
+            return entry
 
     def market(self, method, path, body=None):
         return json_request(method, self.market_url + path, body, token=self.token, ssl_context=self.ssl_context)
@@ -210,14 +236,16 @@ class Requester:
             usage = body.get("usage", {})
             if not isinstance(usage, dict) or len(usage) > 8 or any(type(v) is not int for v in usage.values()):
                 raise ApiError(400, "Invalid usage")
-            if "cost_usd" in body and type(body["cost_usd"]) not in (int, float):
+            if "cost_usd" in body and (type(body["cost_usd"]) not in (int, float)
+                                       or not 0 <= body["cost_usd"] <= 1000000):
                 raise ApiError(400, "Invalid reported cost")
             if record.get("result"):
                 if canonical_hash(record["result"]) != canonical_hash(body):
                     raise ApiError(409, "Conflicting duplicate artifact")
                 return {"received": True, "duplicate": True}
             record["result"] = body
-            self.emit("artifact_received", task_id=record["task_id"], attempt_id=attempt_id, artifact_sha256=body["sha256"])
+            record["received_at"] = time.time()
+            self.emit("artifact_received", task_id=record["task_id"], attempt_id=attempt_id, worker_id=record["worker_id"], kind=record["kind"], artifact_sha256=body["sha256"])
             self.save()
             return {"received": True}
 
@@ -227,7 +255,10 @@ class Requester:
                 return True
             if not self.requester_url:
                 raise ValueError("Start requester server before scheduling")
-            plan = self.plan()
+        plan = self.plan()
+        with self.lock:
+            if self.state["complete"]:
+                return True
             accepted = {kind for kind, task in self.state["tasks"].items() if task["accepted"]}
             for kind, task in self.state["tasks"].items():
                 task_id = task["task_id"]
@@ -286,8 +317,16 @@ class Requester:
                         continue
                     if not record.get("result"):
                         continue
+                    record["verification_started_at"] = time.time()
+                    self.emit("verification_started", task_id=task_id, attempt_id=assignment["attempt_id"],
+                              worker_id=record["worker_id"], kind=kind)
                     report = verify_artifact(kind, record["result"], self.workload, self.accepted_dependencies(kind))
                     record["report"] = report
+                    record["verified_at"] = time.time()
+                    self.emit("verification_completed", task_id=task_id, attempt_id=assignment["attempt_id"],
+                              worker_id=record["worker_id"], kind=kind, passed=report["passed"],
+                              cases_passed=report["cases_passed"], cases_total=report["cases_total"],
+                              elapsed_ms=round((record["verified_at"] - record["verification_started_at"]) * 1000))
                     self.save()
                     if report["passed"]:
                         receipt = {
@@ -415,14 +454,18 @@ class Requester:
         task["accepted"] = True
         task.pop("provider_backoff", None)
         record["status"] = "accepted"
+        record["accepted_at"] = time.time()
         task["accepted_attempt"] = record["attempt_id"]
         self.emit("task_accepted_and_paid", task_id=task["task_id"], attempt_id=record["attempt_id"], worker_id=record["worker_id"], credits=record["credits"])
         self.save()
 
     def assemble(self):
         from .report import build_report, render_report
+        self.emit("application_integration_started")
         report = build_report(self.workspace / "artifacts", self.workload.integration["input"], self.workload)
         if report != self.workload.integration["expect"]:
+            self.emit("application_integration_failed")
+            self.save()
             raise RuntimeError("Final integration suite failed; accepted task receipts remain valid")
         private_json(self.workspace / "report.json", report)
         (self.workspace / "report.html").write_text(render_report(self.workload, report))
@@ -436,29 +479,45 @@ class Requester:
         """Metadata only: never the dispatch token or artifact source."""
         result = record.get("result") or {}
         report = record.get("report") or {}
+        cost = result.get("cost_usd")
+        safe_cost = cost if type(cost) in (int, float) and 0 <= cost <= 1000000 else None
+        usage = result.get("usage")
+        safe_usage = {k: usage[k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+                      if type(usage.get(k)) is int and 0 <= usage[k] <= 1000000000} if isinstance(usage, dict) else None
+        elapsed = result.get("elapsed_ms")
+        safe_elapsed = elapsed if type(elapsed) in (int, float) and 0 <= elapsed <= 3600000 else None
         return {
-            "kind": record.get("kind"), "worker_id": record.get("worker_id"), "status": record.get("status"), "credits": record.get("credits"),
+            "kind": record.get("kind"), "task_id": record.get("task_id"), "attempt_id": record.get("attempt_id"),
+            "worker_id": record.get("worker_id"), "status": record.get("status"), "credits": record.get("credits"),
+            "started_at": record.get("started_at"), "lease_until": record.get("lease_until"),
+            "received_at": record.get("received_at"), "verification_started_at": record.get("verification_started_at"),
+            "verified_at": record.get("verified_at"), "accepted_at": record.get("accepted_at"),
+            "artifact_sha256": result.get("sha256"), "filename": result.get("filename"),
+            "report": {key: report[key] for key in ("passed", "cases_passed", "cases_total", "runtime") if key in report},
             "offers": record.get("offers", []), "selection": record.get("selection"), "repair_round": record.get("repair_round", 0),
-            "provider": result.get("provider"), "model": result.get("model"), "elapsed_ms": result.get("elapsed_ms"),
-            "usage": result.get("usage"), "cost_usd": result.get("cost_usd"), "failure": record.get("failure"),
+            "provider": result.get("provider"), "model": result.get("model"), "elapsed_ms": safe_elapsed,
+            "usage": safe_usage, "cost_usd": safe_cost, "failure": record.get("failure"),
             "diagnostic": report.get("diagnostic") or report.get("reason") if not report.get("passed") else None,
         }
 
     def status(self):
         with self.lock:
-            return {
-                "job_id": self.state["job_id"], "complete": self.state["complete"],
+            snapshot = {
+                "job_id": self.state["job_id"], "complete": self.state["complete"], "planning": self.planning,
                 "workload": {"id": self.workload.id, "title": self.workload.title},
                 "execution_policy": assess_execution("public").to_dict(),
-                "tasks": [{"kind": k, "task_id": t["task_id"], "accepted": t["accepted"], "attempts": t["attempts"], "rejections": t.get("rejections", 0)} for k, t in self.state["tasks"].items()],
+                "tasks": [{"kind": k, "task_id": t["task_id"], "accepted": t["accepted"], "attempts": t["attempts"], "rejections": t.get("rejections", 0), "advertised": t["advertised"], "current_attempt": t.get("current_attempt")} for k, t in self.state["tasks"].items()],
                 "plan": self.state.get("plan"),
                 "attempts": [self._attempt_view(a) for a in self.state["attempts"].values()],
                 "confidential_policy": self.state.get("confidential_policy") or assess_execution("confidential", {"secure": True}).to_dict(),
                 "budget": self.budget_status() if self.budget_status else None,
                 "protected": self.state.get("protected"),
-                "events": self.state["events"][-100:], "integration": self.state.get("integration"),
-                "market": self.market("GET", "/v1/snapshot"),
+                "events": self.state["events"][-1000:], "integration": self.state.get("integration"),
             }
+            snapshot = copy.deepcopy(snapshot)
+        snapshot["market"] = self.market("GET", "/v1/snapshot")
+        snapshot["trace"] = build_trace(snapshot)
+        return snapshot
 
 
 def create_server(requester, host="127.0.0.1", port=0, advertise_url=None, tls_context=None):

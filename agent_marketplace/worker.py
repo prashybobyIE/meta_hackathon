@@ -68,6 +68,7 @@ class Worker:
         self.on_assignment, self.on_event = on_assignment, on_event
         self.max_failures = max(1, min(int(max_failures), 100))
         self.clock = clock
+        self._event_sequence = 0
         self._seen_attempts = set()
         self._bid_tasks = set()
         self._crash_triggered = False
@@ -76,7 +77,8 @@ class Worker:
 
     def _emit(self, event, **fields):
         # Explicit fields only: never forward a remote error, payload or token.
-        entry = {"event": event, "worker_id": self.worker_id, **fields}
+        self._event_sequence += 1
+        entry = {"time": self.clock(), "sequence": self._event_sequence, "event": event, "worker_id": self.worker_id, **fields}
         if self.on_event:
             self.on_event(entry)
 
@@ -214,15 +216,26 @@ class Worker:
         if min(lease_until, deadline) <= self.clock():
             raise ApiError(409, "Attempt expired before generation")
         repair = dispatch.get("repair")
+        operation = "repair" if repair else "generation"
+        call_started = time.monotonic()
+        self._emit("model_call_started", task_id=task_id, attempt_id=attempt_id, provider=self.provider.name,
+                   model=self.provider.model, operation=operation)
         try:
             generated = self.provider.generate_module(contract, policy, sensitivity, repair=repair, **({"dependencies": dependencies} if dependencies else {}))
         except ApiError as exc:
+            self._emit("model_call_failed", task_id=task_id, attempt_id=attempt_id, provider=self.provider.name,
+                       model=self.provider.model, operation=operation, status=exc.status,
+                       elapsed_ms=round((time.monotonic() - call_started) * 1000))
             # Report now so the lease is not wasted waiting for an artifact that will never come.
             try:
                 self._request("POST", attempt_url + "/failure", {"status": exc.status}, token=token)
             except ApiError:
                 pass
             raise
+        self._emit("model_call_completed", task_id=task_id, attempt_id=attempt_id,
+                   provider=generated.get("provider", self.provider.name), model=generated.get("model", self.provider.model),
+                   operation=operation, elapsed_ms=round((time.monotonic() - call_started) * 1000),
+                   cost_usd=generated.get("cost_usd"), usage=generated.get("usage"))
         content = generated.get("content")
         if not isinstance(content, str) or not content or len(content.encode("utf-8")) > MAX_SOURCE_BYTES:
             raise ApiError(413, "Invalid generated module size")

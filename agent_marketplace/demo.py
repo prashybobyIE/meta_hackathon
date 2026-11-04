@@ -48,7 +48,8 @@ def parse_worker_specs(text):
 
 def run_demo(workspace, *, failure=False, provider="fixture", model=None, timeout=45,
              hold_seconds=0, on_ready=None, quiet=False, lease_seconds=None, advertise_host=None, remote_workers=0, single_worker=False, protected_runner=None,
-             tls_cert=None, tls_key=None, ca_file=None, workload=None, worker_specs=None, use_planner=True):
+             tls_cert=None, tls_key=None, ca_file=None, workload=None, worker_specs=None, use_planner=True,
+             on_requester=None, on_snapshot=None, stop_event=None, execution_delay=0.12, bid_window=0):
     workload = resolve_workload(workload)
     tls_context = server_tls_context(tls_cert, tls_key)
     # A self-signed certificate is its own trust anchor unless a CA file is named.
@@ -80,48 +81,54 @@ def run_demo(workspace, *, failure=False, provider="fixture", model=None, timeou
     if remote and not advertise_host:
         raise ValueError("Remote workers need --advertise-host, an address they can reach")
     insecure = remote and tls_context is None
-    store = MarketStore(workspace / "market.sqlite3", requester_token, enrollment_token, allow_insecure_public_network=insecure)
-    bind = "0.0.0.0" if remote else "127.0.0.1"  # All interfaces only on explicit request.
-    market = market_server(store, bind, tls_context=tls_context)
-    market_port = market.server_address[1]
-    scheme = "https" if tls_context else "http"
-    # With TLS, local parties use the advertised name so they verify the same certificate identity.
-    market_url = f"{scheme}://{advertise_host if remote and tls_context else '127.0.0.1'}:{market_port}"
-    lease = lease_seconds or (1.0 if failure and provider == "fixture" else (4.0 if provider == "fixture" else 120.0))
-    hosted_provider = next((name for name in ("meta", "simulated-meta") if name in kinds), None)
-    hosted = hosted_provider is not None
-    child_env = dict(os.environ, META_BUDGET_RUN=workspace.name)
-    servers, planner, budget_status = [market], None, None
-    if hosted_provider == "simulated-meta":
-        # Separate ledger: rehearsals never touch the real spending record.
-        simulator = simulated_server(workload)
-        servers.append(simulator)
-        child_env.update(SIMULATED_META_URL=f"http://127.0.0.1:{simulator.server_address[1]}", META_BUDGET_LEDGER=str(workspace / "simulated-ledger.json"))
-    if hosted:
-        previous_env = {k: os.environ.get(k) for k in ("META_BUDGET_RUN", "SIMULATED_META_URL", "META_BUDGET_LEDGER")}
-        os.environ.update({k: child_env[k] for k in previous_env if k in child_env})
-        ledger = BudgetLedger.from_env()
-        budget_status = ledger.status
-        first_model = model.split(",")[0] if model else None
-        if worker_specs:
-            first_model = next(node_model for name, node_model in worker_specs if name == hosted_provider)
-        planner_provider = (SimulatedMetaProvider if hosted_provider == "simulated-meta" else MetaProvider)(model=first_model, ledger=ledger)
-        planner = lambda: plan_with_meta(planner_provider, workload)
-    requester = Requester(market_url, requester_token, workspace / "requester", lease_seconds=lease, allow_meta=hosted, planner=planner if use_planner else None, budget_status=budget_status, allow_insecure_public_network=insecure, ca_file=ca_file, workload=workload)
-    requester_http = None if remote else requester_server(requester, tls_context=tls_context)
-    if remote:
-        # The requester port must be known before it can be advertised to other machines.
-        import socket
-        with socket.socket() as probe:
-            probe.bind((bind, 0))
-            requester_port = probe.getsockname()[1]
-        requester_http = requester_server(requester, host=bind, port=requester_port, advertise_url=f"{scheme}://{advertise_host}:{requester_port}", tls_context=tls_context)
-    servers.append(requester_http)
-    threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in servers]
-    processes, log_handles = [], []
+    store = None
+    servers, running_servers, threads, processes, log_handles = [], [], [], [], []
+    hosted, previous_env = False, {}
     try:
-        for thread in threads:
+        store = MarketStore(workspace / "market.sqlite3", requester_token, enrollment_token, allow_insecure_public_network=insecure)
+        bind = "0.0.0.0" if remote else "127.0.0.1"  # All interfaces only on explicit request.
+        market = market_server(store, bind, tls_context=tls_context)
+        servers.append(market)
+        market_port = market.server_address[1]
+        scheme = "https" if tls_context else "http"
+        # With TLS, local parties use the advertised name so they verify the same certificate identity.
+        market_url = f"{scheme}://{advertise_host if remote and tls_context else '127.0.0.1'}:{market_port}"
+        lease = lease_seconds or (1.0 if failure and provider == "fixture" else (4.0 if provider == "fixture" else 120.0))
+        hosted_provider = next((name for name in ("meta", "simulated-meta") if name in kinds), None)
+        hosted = hosted_provider is not None
+        child_env = dict(os.environ, META_BUDGET_RUN=workspace.name)
+        planner, budget_status = None, None
+        if hosted_provider == "simulated-meta":
+            # Separate ledger: rehearsals never touch the real spending record.
+            simulator = simulated_server(workload)
+            servers.append(simulator)
+            child_env.update(SIMULATED_META_URL=f"http://127.0.0.1:{simulator.server_address[1]}", META_BUDGET_LEDGER=str(workspace / "simulated-ledger.json"))
+        if hosted:
+            previous_env = {k: os.environ.get(k) for k in ("META_BUDGET_RUN", "SIMULATED_META_URL", "META_BUDGET_LEDGER")}
+            os.environ.update({k: child_env[k] for k in previous_env if k in child_env})
+            ledger = BudgetLedger.from_env()
+            budget_status = ledger.status
+            first_model = model.split(",")[0] if model else None
+            if worker_specs:
+                first_model = next(node_model for name, node_model in worker_specs if name == hosted_provider)
+            planner_provider = (SimulatedMetaProvider if hosted_provider == "simulated-meta" else MetaProvider)(model=first_model, ledger=ledger)
+            planner = lambda: plan_with_meta(planner_provider, workload, on_event=requester.emit)
+        requester = Requester(market_url, requester_token, workspace / "requester", lease_seconds=lease, allow_meta=hosted, planner=planner if use_planner else None, budget_status=budget_status, allow_insecure_public_network=insecure, ca_file=ca_file, workload=workload, bid_window=bid_window)
+        requester_http = None if remote else requester_server(requester, tls_context=tls_context)
+        if remote:
+            # The requester port must be known before it can be advertised to other machines.
+            import socket
+            with socket.socket() as probe:
+                probe.bind((bind, 0))
+                requester_port = probe.getsockname()[1]
+            requester_http = requester_server(requester, host=bind, port=requester_port, advertise_url=f"{scheme}://{advertise_host}:{requester_port}", tls_context=tls_context)
+        servers.append(requester_http)
+        threads = [threading.Thread(target=s.serve_forever, daemon=True) for s in servers]
+        for server, thread in zip(servers, threads):
             thread.start()
+            running_servers.append(server)
+        if on_requester:
+            on_requester(requester)
         if tls_context:
             try:
                 json_request("GET", market_url + "/health", ssl_context=client_context)
@@ -141,7 +148,7 @@ def run_demo(workspace, *, failure=False, provider="fixture", model=None, timeou
             command = [sys.executable, "-m", "agent_marketplace.worker", "--market", market_url,
                        "--enrollment-token-file", str(enroll_file), "--id", worker_id,
                        "--provider", node_provider, "--bid-credits", str(price), "--poll-interval", "0.05",
-                       "--execution-delay", "0.12"]
+                       "--execution-delay", str(execution_delay)]
             if node_model:
                 command += ["--model", node_model]
             if ca_file:
@@ -166,16 +173,22 @@ def run_demo(workspace, *, failure=False, provider="fixture", model=None, timeou
         until = time.monotonic() + timeout
         # All workers enroll before readiness is advertised, making failure deterministic.
         while len(store.snapshot()["workers"]) < len(nodes) + remote_workers:
+            if stop_event and stop_event.is_set():
+                raise RuntimeError("Demo stopped")
             if time.monotonic() >= until:
                 raise TimeoutError("Workers failed to enroll; see worker logs")
             time.sleep(0.05)
         requester.tick(schedule=False)
         task_ids = [t["task_id"] for t in requester.state["tasks"].values() if t["advertised"]]
         while any(len(requester.market("GET", "/v1/tasks/" + task_id + "/bids")["bids"]) < len(nodes) + remote_workers for task_id in task_ids):
+            if stop_event and stop_event.is_set():
+                raise RuntimeError("Demo stopped")
             if time.monotonic() >= until:
                 raise TimeoutError("Workers failed to bid")
             time.sleep(0.05)
         while not requester.tick():
+            if stop_event and stop_event.is_set():
+                raise RuntimeError("Demo stopped")
             if time.monotonic() >= until:
                 raise TimeoutError("Demo timed out; inspect local state and worker logs")
             time.sleep(0.05)
@@ -206,6 +219,8 @@ def run_demo(workspace, *, failure=False, provider="fixture", model=None, timeou
         }
         private_json(workspace / "summary.json", summary)
         private_json(workspace / "market-snapshot.json", snapshot)
+        if on_snapshot:
+            on_snapshot(requester.status())
         integration_input = workload.integration["input"]
         (workspace / workload.integration["input_filename"]).write_text(integration_input if isinstance(integration_input, str) else json.dumps(integration_input))
         if not quiet:
@@ -230,12 +245,14 @@ def run_demo(workspace, *, failure=False, provider="fixture", model=None, timeou
         for log in log_handles:
             log.close()
         for server in reversed(servers):
-            server.shutdown()
+            if server in running_servers:
+                server.shutdown()
             server.server_close()
         for thread in threads:
             if thread.is_alive():
                 thread.join(timeout=5)
-        store.close()
+        if store is not None:
+            store.close()
         if hosted:
             for key, value in previous_env.items():
                 if value is None:

@@ -7,6 +7,7 @@ declared graph and the rejection is reported.
 from __future__ import annotations
 
 import json
+import time
 
 from .protocol import ApiError
 from .workload import COMPLEXITY_CREDITS, default_workload, resolve_workload
@@ -71,24 +72,35 @@ def validate_plan(raw, workload=None):
     return tasks
 
 
-def plan_with_meta(provider, workload=None):
+def plan_with_meta(provider, workload=None, on_event=None):
     """Ask once. Provider failure or an invalid plan falls back and reports why."""
     workload = resolve_workload(workload)
-    contracts = {k: {"function": c["function"], "description": c["description"]} for k, c in workload.contracts.items()}
+    contracts = {k: {"function": c["function"], "description": c["description"],
+                     "required_build_dependencies": list(workload.tasks[k].depends_on),
+                     "consumes_artifacts": list(workload.tasks[k].consumes)}
+                 for k, c in workload.contracts.items()}
     payload = {
         "model": provider.model,
         "messages": [
-            {"role": "developer", "content": workload.planning_brief},
+            {"role": "developer", "content": workload.planning_brief + "\nPlan CODE-GENERATION work, not runtime data flow. Each task's required_build_dependencies is a hard minimum for its depends_on list: include EVERY listed dependency even if its implementation could otherwise be written independently. Those workflow constraints are mandatory. Frozen function/input/output interfaces are already provided. Apart from those required edges, two modules can be implemented in parallel even when the application later pipes data from one to the other. Do not add another dependency merely because one function's output is another function's runtime input; add one only if generating the module genuinely requires an accepted upstream artifact. Explain the build rationale briefly."},
             {"role": "user", "content": json.dumps(contracts)},
         ],
         "max_completion_tokens": provider.max_completion_tokens,
         "reasoning_effort": "low",
         "response_format": {"type": "json_schema", "json_schema": {"name": "task_plan", "schema": plan_schema(workload), "strict": True}},
     }
+    metadata = {"provider": provider.name, "model": provider.model, "operation": "planning", "caller_component": "planner"}
+    started = time.monotonic()
+    if on_event:
+        on_event("model_call_started", **metadata)
     try:
         response, cost = provider.complete(payload)
     except ApiError as exc:
+        if on_event:
+            on_event("model_call_failed", **metadata, status=exc.status, elapsed_ms=round((time.monotonic() - started) * 1000))
         return reference_plan("reference-fallback", f"Planner call failed: {exc.message}", workload)
+    if on_event:
+        on_event("model_call_completed", **metadata, cost_usd=cost, elapsed_ms=round((time.monotonic() - started) * 1000))
     try:
         tasks = validate_plan(json.loads(response["choices"][0]["message"]["content"]), workload)
     except (ValueError, KeyError, IndexError, TypeError) as exc:
