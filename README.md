@@ -12,6 +12,8 @@ The marketplace itself handles public work only. Separately, one private task ra
 - whether local inference through Ollama has been run
 - whether connections between machines use TLS
 
+For the visual dashboard, component placement and personal Meta-key setup, follow the [laptop testing guide](docs/implementation/TRY_DEMO.md).
+
 ## Setup
 
 Python 3.11 or later. The marketplace needs no third-party packages and no installation. From the repository root:
@@ -28,6 +30,14 @@ python3 -m venv .venv && .venv/bin/pip install cryptography
 ```
 
 ## Run it for free
+
+Start the interactive visual dashboard:
+
+```sh
+python3 -m agent_marketplace.studio --port 8765
+```
+
+Open `http://127.0.0.1:8765` and start a free rehearsal. Separate worker processes really bid, receive leases, deliver source and undergo independent verification. Model responses and credits are simulated and labeled. Click components to filter the backend trace; after acceptance, try public CSV input through the resulting application. The dashboard stays open for another run. No cloud resources or local GPU are needed. To enable explicit billable browser runs with your own configured key, add `--allow-live-meta` when starting the studio. See the runbook for scope and controls.
 
 The fixture provider returns clearly labelled prewritten code. It is not AI inference, and it costs nothing.
 
@@ -127,5 +137,3 @@ The October 29 design and threat-model documents are not included: they predate 
 Project-owned code is source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Use, modification and distribution are permitted for the purposes defined in that license. Commercial use outside those permissions requires a separate license from the rights holders. This is not an OSI open-source license. Third-party components retain their own licenses. Any separate rights granted through a hackathon submission remain separate from this repository license.
 
 This repository contains no model weights. Llama 3.2 is Meta's model and is subject to Meta's licence terms, which you accept when you obtain it. The original deployment used an unofficial GGUF conversion. `muse-spark-1.3` is a hosted Meta model, used under your own API agreement.
-
-No licence has been selected for this code yet, so no permission to reuse it is granted beyond what applicable law allows.

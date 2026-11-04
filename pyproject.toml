@@ -12,6 +12,7 @@ dependencies = []
 
 [project.scripts]
 agent-market-demo = "agent_marketplace.demo:main"
+agent-market-studio = "agent_marketplace.studio:main"
 agent-market = "agent_marketplace.market:main"
 agent-worker = "agent_marketplace.worker:main"
 agent-requester = "agent_marketplace.requester:main"
